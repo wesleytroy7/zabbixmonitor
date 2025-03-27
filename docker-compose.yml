@@ -1,18 +1,17 @@
 services:
-  postgres:
+  postgres: 
     hostname: postgres
     container_name: postgres
     image: postgres:"$PG_TAG"
-    restart: unlees-stopped
+    restart: unless-stopped
     environment:
      - "POSTGRES_DB=$POSTGRES_DB"
      - "POSTGRES_USER=$POSTGRES_USER"
-     - "POSTGRES_PASSWORD=$POSTGRES_PASSWORD"
-     - "PGPORT:$PGPORT"
+     - "POSTGRES_PASSWORD=$POSTGRES_PASSWORD" 
     ports:
-       - "DB_HOST_ṔORT=$DB_HOST_ṔORT"
+       - "$DB_HOST_PORT:5433"
     healthcheck: # teste o postgres
-      test: ["CMD-SHELL", "pg_isready -U $POSTGRES_USER"]
+      test: ["CMD-SHELL", "pg_isready  -U $POSTGRES_USER -d $POSTGRES_DB -p 5433"]
       interval: 5s
       timeout: 5s
       retries: 5  
@@ -20,7 +19,6 @@ services:
      - pgdata:/var/lib/postgresql/data
     networks:
      - zabbix-net
-
 
   zabbix-server:
     container_name: zabbix-server
@@ -30,32 +28,91 @@ services:
      - "DB_SERVER_PORT=$DB_SERVER_PORT"
      - "DB_SERVER_HOST=$DB_SERVER_HOST" 
      - "POSTGRES_DB=$POSTGRES_DB"
-     - "POSTGRES_USER=POSTGRES_USER"
+     - "POSTGRES_USER=$POSTGRES_USER"
      - "POSTGRES_PASSWORD=$POSTGRES_PASSWORD"
      - "ZBX_STARTREPORTWRITERS=$ZBX_STARTREPORTWRITERS"
-     - "ZBX_WEBSERVICEURL=$BX_WEBSERVICEURL"
+     - "ZBX_WEBSERVICEURL=$ZBX_WEBSERVICEURL"
     depends_on:
       postgres:
         condition: service_healthy # o zabbix-server so inicia se pg ativo
     volumes:
-     - ./zabbix/usr/lib/zabbix/alertscripts:/usr/lib/zabbix/alertscripts:ro 
-     - ./zabbix/usr/lib/zabbix/externalscripts:/usr/lib/zabbix/externalscripts:ro
-     - ./zabbix/var/lib/zabbix/modules:/var/lib/zabbix/modules:ro
-     - ./zabbix/var/lib/zabbix/enc:/var/lib/zabbix/enc:ro
-     - ./zabbix/var/lib/zabbix/ssh_keys:/var/lib/zabbix/ssh_keys:ro
-     - ./zabbix/var/lib/zabbix/ssl/certs:/var/lib/zabbix/ssl/certs:ro
+     - ./zabbix-server/usr/lib/zabbix/alertscripts:/usr/lib/zabbix/alertscripts:ro 
+     - ./zabbix-server/usr/lib/zabbix/externalscripts:/usr/lib/zabbix/externalscripts:ro
+     - ./zabbix-server/var/lib/zabbix/modules:/var/lib/zabbix/modules:ro
+     - ./zabbix-server/var/lib/zabbix/enc:/var/lib/zabbix/enc:ro
+     - ./zabbix-server/var/lib/zabbix/ssh_keys:/var/lib/zabbix/ssh_keys:ro
+     - ./zabbix-server/var/lib/zabbix/ssl/certs:/var/lib/zabbix/ssl/certs:ro
     networks:
      - zabbix-net
 
     healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:10051/ || exit 1"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
+      test: ["CMD-SHELL", "curl -f http://localhost:10051/ || exit 1"] # testa se está saudavél
+      interval: 30s # teste de 30 em 30 segundos
+      timeout: 10s # aguarda 10 seg para o próximo teste
+      retries: 3 # no máximo 3 testes antes de informar que está unhealthy 
+
+  zabbix-frontend:
+    hostname: zabbix-frontend
+    restart: unless-stopped
+    image: zabbix/zabbix-web-nginx-pgsql:"$VERSION_TAG"
+    ports:
+      - "192.168.100.3:8089:80"
+      - "192.168.100.3:443:443"
+    networks:
+      - zabbix-net
+    environment:
+      - "DB_SERVER_PORT=${DB_SERVER_PORT}"
+      - "DB_SERVER_HOST=${DB_SERVER_HOST}"
+      - "POSTGRES_DB=${POSTGRES_DB}"
+      - "POSTGRES_USER=${POSTGRES_USER}"
+      - "POSTGRES_PASSWORD=${POSTGRES_PASSWORD}"
+      - "PHP_TZ=America/Sao_Paulo"
+      - "ZBX_SERVER_NAME=zabbix-frontend"
+      - "ZBX_SERVER_HOST=zabbix-server"
+    volumes:
+      - ./zabbix-frontend/etc/timezone:/etc/timezone:ro
+      - ./zabbix-frontend/etc/localtime:/etc/localtime:ro
+      - ./zabbix-frontend/etc/ssl/nginx:/etc/ssl/nginx:ro
+      - ./zabbix-frontend/etc/web/certs:/etc/web/certs:ro
+    depends_on:
+       postgres:
+         condition: service_healthy
+       zabbix-server:
+         condition: service_healthy
+     
+  nginx-proxy:
+    image: nginxproxy/nginx-proxy:latest
+    container_name: nginx-proxy
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./zabbix-ssl/nginx/certbot/www:/var/www/certbot
+      - ./zabbix-ssl/certs:/etc/letsencrypt
+      - ./zabbix-ssl/nginx/nginx.conf:/etc/nginx/conf.d/default.conf
+    networks:
+      - zabbix-net
+    restart: unless-stopped
+   
+    depends_on:
+      - zabbix-frontend
+
+  certbot:
+    image: certbot/certbot:latest
+    container_name: certbot
+    volumes:
+      - ./zabbix-ssl/certs:/etc/letsencrypt
+      - ./zabbix-ssl/nginx/certbot/www:/var/www/certbot
+    entrypoint: "/bin/sh -c 'trap exit TERM; while :; do certbot renew --post-hook \"nginx -s reload\"; sleep 12h & wait $${!}; done;'"
+    networks:
+      - zabbix-net
+    depends_on:
+      - nginx-proxy
+
+volumes:
+  pgdata:
 
 networks:
    zabbix-net:
     driver: bridge
-
-volumes:
-   pg_data:   
+   
